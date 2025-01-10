@@ -20,7 +20,7 @@ import (
 	"fmt"
 
 	"github.com/NVIDIA/nvidia-container-toolkit/pkg/config/engine"
-	"github.com/pelletier/go-toml"
+	"github.com/NVIDIA/nvidia-container-toolkit/pkg/config/toml"
 )
 
 // AddRuntime adds a runtime to the containerd config
@@ -32,12 +32,19 @@ func (c *Config) AddRuntime(name string, path string, setAsDefault bool) error {
 
 	config.Set("version", int64(2))
 
-	if runc, ok := config.GetPath([]string{"plugins", "io.containerd.grpc.v1.cri", "containerd", "runtimes", "runc"}).(*toml.Tree); ok {
-		runc, _ = toml.Load(runc.String())
-		config.SetPath([]string{"plugins", "io.containerd.grpc.v1.cri", "containerd", "runtimes", name}, runc)
+	runtimeNamesForConfig := engine.GetLowLevelRuntimes(c)
+	for _, r := range runtimeNamesForConfig {
+		options := config.GetSubtreeByPath([]string{"plugins", "io.containerd.grpc.v1.cri", "containerd", "runtimes", r})
+		if options == nil {
+			continue
+		}
+		c.Logger.Debugf("using options from runtime %v: %v", r, options)
+		config.SetPath([]string{"plugins", "io.containerd.grpc.v1.cri", "containerd", "runtimes", name}, options.Copy())
+		break
 	}
 
 	if config.GetPath([]string{"plugins", "io.containerd.grpc.v1.cri", "containerd", "runtimes", name}) == nil {
+		c.Logger.Warningf("could not infer options from runtimes %v; using defaults", runtimeNamesForConfig)
 		config.SetPath([]string{"plugins", "io.containerd.grpc.v1.cri", "containerd", "runtimes", name, "runtime_type"}, c.RuntimeType)
 		config.SetPath([]string{"plugins", "io.containerd.grpc.v1.cri", "containerd", "runtimes", name, "runtime_root"}, "")
 		config.SetPath([]string{"plugins", "io.containerd.grpc.v1.cri", "containerd", "runtimes", name, "runtime_engine"}, "")
@@ -90,11 +97,10 @@ func (c *Config) getRuntimeAnnotations(path []string) ([]string, error) {
 }
 
 // Set sets the specified containerd option.
-func (c *Config) Set(key string, value interface{}) error {
+func (c *Config) Set(key string, value interface{}) {
 	config := *c.Tree
 	config.SetPath([]string{"plugins", "io.containerd.grpc.v1.cri", key}, value)
 	*c.Tree = config
-	return nil
 }
 
 // DefaultRuntime returns the default runtime for the cri-o config
@@ -135,16 +141,4 @@ func (c *Config) RemoveRuntime(name string) error {
 
 	*c.Tree = config
 	return nil
-}
-
-// Save writes the config to the specified path
-func (c Config) Save(path string) (int64, error) {
-	config := c.Tree
-	output, err := config.Marshal()
-	if err != nil {
-		return 0, fmt.Errorf("unable to convert to TOML: %v", err)
-	}
-
-	n, err := engine.Config(path).Write(output)
-	return int64(n), err
 }

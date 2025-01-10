@@ -38,8 +38,8 @@ EXAMPLE_TARGETS := $(patsubst %,example-%, $(EXAMPLES))
 CMDS := $(patsubst ./cmd/%/,%,$(sort $(dir $(wildcard ./cmd/*/))))
 CMD_TARGETS := $(patsubst %,cmd-%, $(CMDS))
 
-CHECK_TARGETS := golangci-lint
-MAKE_TARGETS := binaries build check fmt lint-internal test examples cmds coverage generate licenses $(CHECK_TARGETS)
+CHECK_TARGETS := lint
+MAKE_TARGETS := binaries build check fmt test examples cmds coverage generate licenses vendor check-vendor $(CHECK_TARGETS)
 
 TARGETS := $(MAKE_TARGETS) $(EXAMPLE_TARGETS) $(CMD_TARGETS)
 
@@ -53,22 +53,26 @@ CLI_VERSION = $(VERSION)
 endif
 CLI_VERSION_PACKAGE = github.com/NVIDIA/nvidia-container-toolkit/internal/info
 
-GOOS ?= linux
-
 binaries: cmds
 ifneq ($(PREFIX),)
 cmd-%: COMMAND_BUILD_OPTIONS = -o $(PREFIX)/$(*)
 endif
 cmds: $(CMD_TARGETS)
+
+ifneq ($(shell uname),Darwin)
+EXTLDFLAGS = -Wl,--export-dynamic -Wl,--unresolved-symbols=ignore-in-object-files -Wl,-z,lazy
+else
+EXTLDFLAGS = -Wl,-undefined,dynamic_lookup
+endif
 $(CMD_TARGETS): cmd-%:
-	GOOS=$(GOOS) go build -ldflags "-extldflags=-Wl,-z,lazy -s -w -X $(CLI_VERSION_PACKAGE).gitCommit=$(GIT_COMMIT) -X $(CLI_VERSION_PACKAGE).version=$(CLI_VERSION)" $(COMMAND_BUILD_OPTIONS) $(MODULE)/cmd/$(*)
+	go build -ldflags "-s -w '-extldflags=$(EXTLDFLAGS)' -X $(CLI_VERSION_PACKAGE).gitCommit=$(GIT_COMMIT) -X $(CLI_VERSION_PACKAGE).version=$(CLI_VERSION)" $(COMMAND_BUILD_OPTIONS) $(MODULE)/cmd/$(*)
 
 build:
-	GOOS=$(GOOS) go build ./...
+	go build ./...
 
 examples: $(EXAMPLE_TARGETS)
 $(EXAMPLE_TARGETS): example-%:
-	GOOS=$(GOOS) go build ./examples/$(*)
+	go build ./examples/$(*)
 
 all: check test build binary
 check: $(CHECK_TARGETS)
@@ -78,15 +82,28 @@ fmt:
 	go list -f '{{.Dir}}' $(MODULE)/... \
 		| xargs gofmt -s -l -w
 
-golangci-lint:
+# Apply goimports -local github.com/NVIDIA/container-toolkit to the codebase
+goimports:
+	go list -f {{.Dir}} $(MODULE)/... \
+		| xargs goimports -local $(MODULE) -w
+
+lint:
 	golangci-lint run ./...
+
+vendor:
+	go mod tidy
+	go mod vendor
+	go mod verify
+
+check-vendor: vendor
+	git diff --quiet HEAD -- go.mod go.sum vendor
 
 licenses:
 	go-licenses csv $(MODULE)/...
 
 COVERAGE_FILE := coverage.out
 test: build cmds
-	go test -v -coverprofile=$(COVERAGE_FILE) $(MODULE)/...
+	go test -coverprofile=$(COVERAGE_FILE) $(MODULE)/...
 
 coverage: test
 	cat $(COVERAGE_FILE) | grep -v "_mock.go" > $(COVERAGE_FILE).no-mocks
@@ -97,29 +114,22 @@ generate:
 
 # Generate an image for containerized builds
 # Note: This image is local only
-.PHONY: .build-image .pull-build-image .push-build-image
-.build-image: docker/Dockerfile.devel
-	if [ x"$(SKIP_IMAGE_BUILD)" = x"" ]; then \
-		$(DOCKER) build \
-			--progress=plain \
-			--build-arg GOLANG_VERSION="$(GOLANG_VERSION)" \
-			--tag $(BUILDIMAGE) \
-			-f $(^) \
-			docker; \
-	fi
+.PHONY: .build-image
+.build-image:
+	make -f deployments/devel/Makefile .build-image
 
-.pull-build-image:
-	$(DOCKER) pull $(BUILDIMAGE)
+ifeq ($(BUILD_DEVEL_IMAGE),yes)
+$(DOCKER_TARGETS): .build-image
+.shell: .build-image
+endif
 
-.push-build-image:
-	$(DOCKER) push $(BUILDIMAGE)
-
-$(DOCKER_TARGETS): docker-%: .build-image
-	@echo "Running 'make $(*)' in docker container $(BUILDIMAGE)"
+$(DOCKER_TARGETS): docker-%:
+	@echo "Running 'make $(*)' in container image $(BUILDIMAGE)"
 	$(DOCKER) run \
 		--rm \
-		-e GOCACHE=/tmp/.cache \
-		-e GOLANGCI_LINT_CACHE=/tmp/.cache \
+		-e GOCACHE=/tmp/.cache/go \
+		-e GOMODCACHE=/tmp/.cache/gomod \
+		-e GOLANGCI_LINT_CACHE=/tmp/.cache/golangci-lint \
 		-v $(PWD):/work \
 		-w /work \
 		--user $$(id -u):$$(id -g) \
@@ -132,8 +142,9 @@ PHONY: .shell
 	$(DOCKER) run \
 		--rm \
 		-ti \
-		-e GOCACHE=/tmp/.cache \
-		-e GOLANGCI_LINT_CACHE=/tmp/.cache \
+		-e GOCACHE=/tmp/.cache/go \
+		-e GOMODCACHE=/tmp/.cache/gomod \
+		-e GOLANGCI_LINT_CACHE=/tmp/.cache/golangci-lint \
 		-v $(PWD):/work \
 		-w /work \
 		--user $$(id -u):$$(id -g) \

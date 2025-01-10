@@ -24,11 +24,12 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/fsnotify/fsnotify"
+	"github.com/urfave/cli/v2"
+
 	"github.com/NVIDIA/nvidia-container-toolkit/internal/logger"
 	"github.com/NVIDIA/nvidia-container-toolkit/internal/system/nvdevices"
 	"github.com/NVIDIA/nvidia-container-toolkit/internal/system/nvmodules"
-	"github.com/fsnotify/fsnotify"
-	"github.com/urfave/cli/v2"
 )
 
 const (
@@ -86,7 +87,7 @@ func (m command) build() *cli.Command {
 			Usage:       "The path to the driver root. `DRIVER_ROOT`/dev is searched for NVIDIA device nodes.",
 			Value:       "/",
 			Destination: &cfg.driverRoot,
-			EnvVars:     []string{"DRIVER_ROOT"},
+			EnvVars:     []string{"NVIDIA_DRIVER_ROOT", "DRIVER_ROOT"},
 		},
 		&cli.BoolFlag{
 			Name:        "watch",
@@ -186,11 +187,11 @@ create:
 			if !strings.HasPrefix(deviceNode, "nvidia") {
 				continue
 			}
-			if event.Op&fsnotify.Create == fsnotify.Create {
+			if event.Has(fsnotify.Create) {
 				m.logger.Infof("%s created, restarting.", event.Name)
 				goto create
 			}
-			if event.Op&fsnotify.Create == fsnotify.Remove {
+			if event.Has(fsnotify.Remove) {
 				m.logger.Infof("%s removed. Ignoring", event.Name)
 
 			}

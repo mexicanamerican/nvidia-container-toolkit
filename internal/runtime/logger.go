@@ -26,8 +26,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/NVIDIA/nvidia-container-toolkit/internal/logger"
 	"github.com/sirupsen/logrus"
+
+	"github.com/NVIDIA/nvidia-container-toolkit/internal/logger"
 )
 
 // Logger adds a way to manage output to a log file to a logrus.Logger
@@ -237,7 +238,7 @@ func parseArgs(args []string) loggerConfig {
 		var value string
 		switch {
 		case len(parts) == 2:
-			value = parts[2]
+			value = parts[1]
 		case i+1 < len(args):
 			value = args[i+1]
 			i++
